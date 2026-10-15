@@ -1,0 +1,223 @@
+# PulseSQL Semantic Metric Dictionary
+# Defines canonical product analytics metrics, calculation definitions, and SQL logic.
+
+version: "1.0.0"
+domain: "edtech_product_analytics"
+
+tables:
+  learners:
+    description: "Registered learners demographic and attribution dimension table"
+    primary_key: "learner_id"
+    columns:
+      learner_id: "Unique learner identifier"
+      signup_timestamp: "Timestamp when user registered account"
+      acquisition_channel: "Growth marketing source: 'Organic Search', 'YouTube Creators', 'Meta Ads', 'Campus Referral'"
+      device_os: "Client platform: 'Android', 'iOS', 'Web'"
+      city_tier: "Geographic classification: 'Tier 1', 'Tier 2', 'Tier 3'"
+
+  telemetry_events:
+    description: "Time-series product engagement events"
+    primary_key: "event_id"
+    foreign_keys:
+      learner_id: "learners.learner_id"
+    columns:
+      event_id: "Unique event identifier"
+      learner_id: "Learner who performed the action"
+      event_name: "Action type: 'app_launch', 'syllabus_explored', 'mock_exam_started', 'mock_exam_submitted', 'paywall_viewed'"
+      app_version: "Client build version: 'v2.3.9', 'v2.4.0', 'v2.4.1'"
+      session_latency_ms: "Response latency of the action in milliseconds"
+      occurred_at: "Timestamp of event occurrence"
+
+  subscriptions:
+    description: "Monetization and membership transactions"
+    primary_key: "subscription_id"
+    foreign_keys:
+      learner_id: "learners.learner_id"
+    columns:
+      subscription_id: "Unique transaction identifier"
+      learner_id: "Subscribed learner ID"
+      plan_tier: "Subscription tier: 'Monthly Pro', 'Annual Pass'"
+      revenue_inr: "Monetary amount in INR (completed payments)"
+      payment_status: "Status: 'completed', 'failed', 'refunded'"
+      activated_at: "Timestamp of payment activation"
+
+  ai_doubt_sessions:
+    description: "Usage telemetry for GenAI instant doubt-clearing assistant"
+    primary_key: "session_id"
+    foreign_keys:
+      learner_id: "learners.learner_id"
+    columns:
+      session_id: "Unique AI doubt chat session identifier"
+      learner_id: "Learner identifier"
+      response_latency_ms: "AI model response latency in ms"
+      resolution_rating: "Learner feedback score 1-5 stars"
+      token_consumption: "LLM tokens consumed by the session"
+      created_at: "Timestamp of session completion"
+
+metrics:
+  daily_active_learners:
+    canonical_name: "daily_active_learners"
+    display_title: "Daily Active Learners (DAL)"
+    category: "engagement"
+    description: "Count of distinct learners who performed a core study action (mock_exam_started or syllabus_explored) on a given day."
+    synonyms:
+      - "DAL"
+      - "active users"
+      - "active learners"
+      - "daily engagement"
+      - "daily active learners"
+    dimensions:
+      - "date"
+      - "device_os"
+      - "acquisition_channel"
+      - "city_tier"
+    sql_formula: |
+      SELECT 
+          DATE(t.occurred_at) AS metric_date,
+          COUNT(DISTINCT t.learner_id) AS daily_active_learners
+      FROM telemetry_events t
+      WHERE t.event_name IN ('mock_exam_started', 'syllabus_explored')
+      GROUP BY DATE(t.occurred_at)
+      ORDER BY metric_date DESC
+
+  mock_exam_completion_funnel:
+    canonical_name: "mock_exam_completion_funnel"
+    display_title: "Mock Exam Completion Funnel"
+    category: "funnel"
+    description: "Step-by-step conversion funnel tracking learner progression from app_launch -> mock_exam_started -> mock_exam_submitted."
+    synonyms:
+      - "funnel"
+      - "exam funnel"
+      - "mock exam funnel"
+      - "exam dropoff"
+      - "mock exam completion funnel"
+      - "test completion rate"
+    funnel_steps:
+      - step_number: 1
+        event_name: "app_launch"
+        step_title: "1. App Launch"
+      - step_number: 2
+        event_name: "mock_exam_started"
+        step_title: "2. Exam Started"
+      - step_number: 3
+        event_name: "mock_exam_submitted"
+        step_title: "3. Exam Submitted"
+    sql_formula: |
+      SELECT 
+          '1. App Launch' AS funnel_step,
+          1 AS step_order,
+          COUNT(DISTINCT CASE WHEN event_name = 'app_launch' THEN learner_id END) AS unique_learners
+      FROM telemetry_events
+      UNION ALL
+      SELECT 
+          '2. Exam Started' AS funnel_step,
+          2 AS step_order,
+          COUNT(DISTINCT CASE WHEN event_name = 'mock_exam_started' THEN learner_id END) AS unique_learners
+      FROM telemetry_events
+      UNION ALL
+      SELECT 
+          '3. Exam Submitted' AS funnel_step,
+          3 AS step_order,
+          COUNT(DISTINCT CASE WHEN event_name = 'mock_exam_submitted' THEN learner_id END) AS unique_learners
+      FROM telemetry_events
+      ORDER BY step_order ASC
+
+  d7_cohort_retention:
+    canonical_name: "d7_cohort_retention"
+    display_title: "Day 7 (D7) Cohort Retention"
+    category: "retention"
+    description: "Percentage of learners registered in a cohort who return to trigger any active telemetry event exactly 7 days after signup."
+    synonyms:
+      - "D7 retention"
+      - "day 7 retention"
+      - "cohort retention"
+      - "7-day retention"
+      - "retention cohort"
+    sql_formula: |
+      WITH learner_cohorts AS (
+          SELECT 
+              learner_id,
+              DATE(signup_timestamp) AS cohort_date
+          FROM learners
+      ),
+      day_7_activity AS (
+          SELECT DISTINCT
+              t.learner_id
+          FROM telemetry_events t
+          JOIN learners l ON t.learner_id = l.learner_id
+          WHERE DATE(t.occurred_at) = DATE(l.signup_timestamp, '+7 days')
+      )
+      SELECT 
+          c.cohort_date,
+          COUNT(DISTINCT c.learner_id) AS cohort_size,
+          COUNT(DISTINCT a.learner_id) AS retained_learners_d7,
+          ROUND(CAST(COUNT(DISTINCT a.learner_id) AS FLOAT) * 100.0 / NULLIF(COUNT(DISTINCT c.learner_id), 0), 2) AS d7_retention_rate_pct
+      FROM learner_cohorts c
+      LEFT JOIN day_7_activity a ON c.learner_id = a.learner_id
+      GROUP BY c.cohort_date
+      HAVING COUNT(DISTINCT c.learner_id) > 0
+      ORDER BY c.cohort_date DESC
+
+  paid_conversion_rate:
+    canonical_name: "paid_conversion_rate"
+    display_title: "Paid Subscription Conversion Rate"
+    category: "monetization"
+    description: "Percentage of registered learners who complete a paid subscription transaction."
+    synonyms:
+      - "paid conversion"
+      - "conversion to paid"
+      - "subscription conversion"
+      - "paywall conversion"
+      - "paying user percentage"
+    sql_formula: |
+      SELECT 
+          COUNT(DISTINCT l.learner_id) AS total_registered_learners,
+          COUNT(DISTINCT CASE WHEN s.payment_status = 'completed' THEN s.learner_id END) AS total_paying_learners,
+          ROUND(CAST(COUNT(DISTINCT CASE WHEN s.payment_status = 'completed' THEN s.learner_id END) AS FLOAT) * 100.0 / NULLIF(COUNT(DISTINCT l.learner_id), 0), 2) AS paid_conversion_rate_pct
+      FROM learners l
+      LEFT JOIN subscriptions s ON l.learner_id = s.learner_id
+
+  net_revenue_by_channel:
+    canonical_name: "net_revenue_by_channel"
+    display_title: "Net Revenue by Acquisition Channel"
+    category: "monetization"
+    description: "Total recognized revenue (INR) from completed subscriptions segmented by learner acquisition channel."
+    synonyms:
+      - "revenue by channel"
+      - "channel revenue"
+      - "CAC return"
+      - "acquisition channel revenue"
+      - "net revenue"
+    dimensions:
+      - "acquisition_channel"
+      - "plan_tier"
+    sql_formula: |
+      SELECT 
+          l.acquisition_channel,
+          COUNT(DISTINCT s.subscription_id) AS completed_orders,
+          ROUND(SUM(s.revenue_inr), 2) AS total_revenue_inr,
+          ROUND(AVG(s.revenue_inr), 2) AS avg_order_value_inr
+      FROM subscriptions s
+      JOIN learners l ON s.learner_id = l.learner_id
+      WHERE s.payment_status = 'completed'
+      GROUP BY l.acquisition_channel
+      ORDER BY total_revenue_inr DESC
+
+  ai_doubt_resolution_rate:
+    canonical_name: "ai_doubt_resolution_rate"
+    display_title: "AI Doubt Resolution & Latency Metrics"
+    category: "product_quality"
+    description: "Average latency, satisfaction rating, and token consumption for AI doubt sessions."
+    synonyms:
+      - "ai doubt"
+      - "doubt resolution"
+      - "ai latency"
+      - "ai satisfaction"
+      - "doubt token cost"
+    sql_formula: |
+      SELECT 
+          COUNT(session_id) AS total_doubt_sessions,
+          ROUND(AVG(response_latency_ms), 1) AS avg_response_latency_ms,
+          ROUND(AVG(resolution_rating), 2) AS avg_satisfaction_rating,
+          ROUND(AVG(token_consumption), 0) AS avg_tokens_per_session
+      FROM ai_doubt_sessions
