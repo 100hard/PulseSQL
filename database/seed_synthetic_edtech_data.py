@@ -149,18 +149,7 @@ def generate_synthetic_dataset(
             # Step 3: mock_exam_started (65% probability)
             if random.random() < 0.65:
                 exam_start_time = session_base_time + timedelta(seconds=random.randint(100, 300))
-                synthetic_telemetry_events.append(
-                    {
-                        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
-                        "learner_id": assigned_learner_id,
-                        "event_name": "mock_exam_started",
-                        "app_version": active_app_version,
-                        "session_latency_ms": session_latency_ms + random.randint(50, 150),
-                        "occurred_at": exam_start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                    }
-                )
-
-                # Step 4: mock_exam_submitted
+                
                 # CRITICAL PLANT: Check if this session triggers the Android v2.4.1 bug
                 is_anomalous_session = (
                     is_within_anomaly_window
@@ -169,13 +158,25 @@ def generate_synthetic_dataset(
                 )
 
                 if is_anomalous_session:
-                    # In this anomalous slice, latency blows up above 4500ms and completion crashes to ~15%
-                    anomalous_latency_ms = random.randint(4650, 8900)
-                    submission_probability = 0.14  # Catastrophic drop from standard 72%
+                    # In this anomalous slice, latency blows up above 4500ms and completion crashes to ~14%
+                    exam_event_latency_ms = random.randint(4650, 8900)
+                    submission_probability = 0.14
                 else:
-                    anomalous_latency_ms = session_latency_ms + random.randint(80, 220)
+                    exam_event_latency_ms = session_latency_ms + random.randint(50, 150)
                     submission_probability = 0.72
 
+                synthetic_telemetry_events.append(
+                    {
+                        "event_id": f"evt_{uuid.uuid4().hex[:12]}",
+                        "learner_id": assigned_learner_id,
+                        "event_name": "mock_exam_started",
+                        "app_version": active_app_version,
+                        "session_latency_ms": exam_event_latency_ms,
+                        "occurred_at": exam_start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }
+                )
+
+                # Step 4: mock_exam_submitted
                 if random.random() < submission_probability:
                     exam_submit_time = exam_start_time + timedelta(minutes=random.randint(15, 60))
                     synthetic_telemetry_events.append(
@@ -184,7 +185,7 @@ def generate_synthetic_dataset(
                             "learner_id": assigned_learner_id,
                             "event_name": "mock_exam_submitted",
                             "app_version": active_app_version,
-                            "session_latency_ms": anomalous_latency_ms,
+                            "session_latency_ms": exam_event_latency_ms + random.randint(200, 800),
                             "occurred_at": exam_submit_time.strftime("%Y-%m-%d %H:%M:%S"),
                         }
                     )
@@ -198,7 +199,7 @@ def generate_synthetic_dataset(
                                 "learner_id": assigned_learner_id,
                                 "event_name": "paywall_viewed",
                                 "app_version": active_app_version,
-                                "session_latency_ms": anomalous_latency_ms,
+                                "session_latency_ms": exam_event_latency_ms,
                                 "occurred_at": paywall_time.strftime("%Y-%m-%d %H:%M:%S"),
                             }
                         )
